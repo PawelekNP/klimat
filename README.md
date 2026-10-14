@@ -4,7 +4,7 @@ Heating and cooling for Home Assistant — one panel for every room, a weekly
 schedule, rules, history, and a summer/winter switch.
 The whole interface follows the language set in Home Assistant (English and Polish).
 
-![version](https://img.shields.io/badge/version-1.1.0-E8833A)
+![version](https://img.shields.io/badge/version-1.3.0-E8833A)
 ![hacs](https://img.shields.io/badge/HACS-custom%20repository-41BDF5)
 
 ## Install
@@ -73,6 +73,10 @@ A manual change wins over the schedule **until the next block**. The tile then s
 a `manual until 22:30` badge and a **Back to schedule** button that hands control back
 immediately.
 
+If the valve has a child lock, a small padlock appears in the corner of the tile — one tap
+engages or releases it. Klimat finds the lock by itself on the valve's device, so the
+padlock shows up only where there is something to lock.
+
 **Schedule.** Each room's day is a bar split into blocks, coloured by temperature —
 blue is cool, orange is warm, so a week reads at a glance. Tap a block to change its
 temperature, split it or remove it; drag the handles between blocks to move a boundary
@@ -97,6 +101,21 @@ room reaches it — then the air conditioning switches off on its own and the sc
 over again. This is the one exception to the never-heat-and-cool-at-once rule. If the
 target turns out to be unreachable, turbo gives up after two hours rather than running all
 evening.
+
+**Underfloor heating.** Electric underfloor heating that appears in Home Assistant as a
+plain switch can be assigned to a room, and Klimat becomes its thermostat. Two things make
+that work. It heats *in portions* — each 20 minute cycle runs only as long as the gap to
+the target warrants — so the slab never overshoots and the room stops swinging. And it
+starts *early*: Klimat measures how fast each room actually warms up and works backwards
+from the schedule, so a bathroom set to 23° at 06:30 is warm at 06:30, not at 07:30. The
+measured rate survives restarts and gets better over the first few days. The room needs a
+temperature sensor.
+
+**Energy.** Point a room at a cumulative energy meter — a Shelly relay, a smart socket —
+and the **Energy** tab breaks consumption down by room: this month, last month, and a bar
+per month for the past year, so the heating season is visible at a glance. Set a price per
+kWh in the card and it shows the cost too. The figures come from Home Assistant's own
+statistics, the same ones behind the Energy dashboard; Klimat only groups them by room.
 
 **History.** Measured versus target temperature per room, over 24 hours, 3 days or a week.
 If the solid line never catches up with the dashed one, that radiator cannot keep up.
@@ -146,6 +165,10 @@ Ręczna zmiana wygrywa z harmonogramem **do następnego bloku**; na kafelku poja
 wtedy plakietka „ręcznie do 22:30" i przycisk **Wróć do harmonogramu**, który oddaje
 stery od razu.
 
+Jeśli głowica ma blokadę rodzicielską, w rogu kafelka pojawia się mała kłódka — jedno
+dotknięcie zakłada ją albo zdejmuje. Klimat znajduje blokadę sam, na urządzeniu głowicy,
+więc kłódka pokazuje się tylko tam, gdzie jest co blokować.
+
 **Harmonogram.** Doba każdego pokoju to pasek podzielony na bloki. Kolor bloku to jego
 temperatura: niebieski chłodno, pomarańczowy ciepło. Dotknięcie bloku pozwala zmienić
 temperaturę, podzielić go na pół albo usunąć; uchwyty między blokami przeciągasz w lewo
@@ -167,6 +190,21 @@ dopóki pokój jej nie osiągnie — potem klimatyzacja gaśnie sama i wraca har
 To jedyny wyjątek od zasady, że grzejnik i klimatyzacja nigdy nie pracują naraz.
 Gdyby cel okazał się nieosiągalny, turbo poddaje się po dwóch godzinach, zamiast grzać
 do wieczora.
+
+**Podłogówka.** Elektryczne ogrzewanie podłogowe, które w Home Assistancie jest zwykłym
+przełącznikiem, można przypisać do pokoju — Klimat staje się wtedy jego termostatem.
+Robi dwie rzeczy, bez których to nie działa. Grzeje *porcjami*: w każdym 20-minutowym
+cyklu tyle, ile wynika z różnicy do celu, więc wylewka się nie przeładowuje i pokój
+przestaje falować. I włącza *wcześniej*: mierzy, jak szybko dany pokój realnie się
+nagrzewa, i odlicza wstecz od godziny z harmonogramu — żeby łazienka ustawiona na 23°
+o 6:30 była ciepła o 6:30, a nie o 7:30. Zmierzone tempo przeżywa restart i z każdym dniem
+jest celniejsze. Pokój musi mieć czujnik temperatury.
+
+**Zużycie.** Wskaż pokojowi licznik energii — przekaźnik Shelly, gniazdko z pomiarem —
+a zakładka **Zużycie** pokaże rozbicie na pokoje: ten miesiąc, poprzedni i słupek na każdy
+miesiąc z ostatniego roku, więc sezon grzewczy widać jednym spojrzeniem. Po wpisaniu ceny
+za kWh dolicza koszt. Liczby pochodzą ze statystyk Home Assistanta, tych samych, na których
+stoi panel Energia — Klimat tylko grupuje je po pokojach.
 
 **Historia.** Temperatura zmierzona kontra zadana, dla każdego pokoju, z 24 godzin,
 3 dni albo tygodnia. Jeśli linia ciągła nigdy nie dogania przerywanej, grzejnik

@@ -1,10 +1,10 @@
 /*!
  * Klimat Card — ogrzewanie i chłodzenie w Home Assistancie.
  * Klimat Card — heating and cooling for Home Assistant.
- * v1.1.0 — MIT
+ * v1.3.0 — MIT
  */
 
-const VERSION = "1.1.0";
+const VERSION = "1.3.0";
 
 /* ================= tłumaczenia / translations ================= */
 
@@ -12,6 +12,17 @@ const STR = {
   pl: {
     outside: "na zewnątrz", winter: "Zima", summer: "Lato",
     tabRooms: "Pokoje", tabSched: "Harmonogram", tabRules: "Reguły", tabHist: "Historia",
+    tabEnergy: "Zużycie",
+    enThisMonth: "ten miesiąc", enLastMonth: "poprzedni", enYear: "ostatnie 12 miesięcy",
+    enTotal: "Razem", enNone: "Żaden pokój nie ma wskazanego licznika energii — " +
+      "dodaj go w edytorze karty, w polu „Licznik energii”.",
+    enHint: "Liczby pochodzą ze statystyk Home Assistanta, tych samych, które widzisz " +
+      "w panelu Energia. Klimat ich nie przelicza, tylko pokazuje w rozbiciu na pokoje.",
+    enErr: "Nie udało się wczytać statystyk.",
+    edEnergy: "Licznik energii (kWh)",
+    edEnergyHint: "Licznik zużycia z gniazdka albo przekaźnika, np. Shelly. " +
+      "Musi być licznikiem narastającym, nie chwilową mocą w watach.",
+    edPrice: "Cena za kWh", edPriceHint: "Zostaw puste, żeby nie pokazywać kosztów.",
     stHeat: "grzanie", stCool: "chłodzenie", stIdle: "gotowe", stNone: "brak",
     doHeat: "grzeje", doCool: "chłodzi", doHold: "utrzymuje", doNone: "niedostępne",
     target: "cel", room: "Pokój", newRoom: "Nowy pokój",
@@ -28,6 +39,18 @@ const STR = {
     rWindow: "otwarte okno", rAway: "nikogo w domu", rOff: "wyłączone ręcznie",
     rOffUntil: "wyłączone do {t}", rOffMidnight: "wyłączone do północy",
     rTurbo: "turbo do {t}°",
+    rPreheat: "rozgrzewa na {t}", rNoSensor: "brak czujnika",
+    floor: "Podłogówka",
+    lockOn: "Blokada rodzicielska włączona — dotknij, żeby zdjąć",
+    lockOff: "Blokada rodzicielska wyłączona — dotknij, żeby założyć",
+    edLock: "Blokada rodzicielska",
+    edLockHint: "Zwykle Klimat znajduje ją sam, jeśli głowica ją ma. " +
+      "To pole przyda się tylko wtedy, gdy encja nazywa się nietypowo.",
+    edFloor: "Ogrzewanie podłogowe (przełącznik)",
+    edFloorHint: "Elektryczna podłogówka widziana w HA jako przełącznik. " +
+      "Klimat sam pełni rolę termostatu: grzeje porcjami, żeby wylewka nie przestrzeliła, " +
+      "i włącza z wyprzedzeniem, bo ciepło potrzebuje czasu, żeby dojść do powierzchni. " +
+      "Wymaga czujnika temperatury w tym pokoju.",
     turbo: "Turbo", turboStop: "Zatrzymaj turbo",
     turboTitle: "Szybkie dogrzanie",
     turboDesc: "Grzejnik i klimatyzacja grzeją razem, aż pokój osiągnie zadaną " +
@@ -100,6 +123,18 @@ const STR = {
   en: {
     outside: "outside", winter: "Winter", summer: "Summer",
     tabRooms: "Rooms", tabSched: "Schedule", tabRules: "Rules", tabHist: "History",
+    tabEnergy: "Energy",
+    enThisMonth: "this month", enLastMonth: "last month", enYear: "last 12 months",
+    enTotal: "Total", enNone: "No room has an energy meter assigned — " +
+      "add one in the card editor, under \u201cEnergy meter\u201d.",
+    enHint: "The numbers come from Home Assistant's own statistics, the same ones the " +
+      "Energy dashboard uses. Klimat does not recalculate them, it just breaks them down " +
+      "by room.",
+    enErr: "Could not load the statistics.",
+    edEnergy: "Energy meter (kWh)",
+    edEnergyHint: "A consumption meter from a socket or relay, for example a Shelly. " +
+      "It must be a cumulative meter, not instantaneous power in watts.",
+    edPrice: "Price per kWh", edPriceHint: "Leave empty to hide costs.",
     stHeat: "heating", stCool: "cooling", stIdle: "ready", stNone: "none",
     doHeat: "heating", doCool: "cooling", doHold: "holding", doNone: "unavailable",
     target: "target", room: "Room", newRoom: "New room",
@@ -116,6 +151,18 @@ const STR = {
     rWindow: "window open", rAway: "nobody home", rOff: "switched off by hand",
     rOffUntil: "off until {t}", rOffMidnight: "off until midnight",
     rTurbo: "turbo to {t}°",
+    rPreheat: "warming up for {t}", rNoSensor: "no sensor",
+    floor: "Underfloor",
+    lockOn: "Child lock on — tap to release",
+    lockOff: "Child lock off — tap to engage",
+    edLock: "Child lock",
+    edLockHint: "Klimat normally finds it by itself when the valve has one. " +
+      "This field only matters when the entity has an unusual name.",
+    edFloor: "Underfloor heating (switch)",
+    edFloorHint: "Electric underfloor heating that appears in HA as a switch. " +
+      "Klimat acts as the thermostat itself: it heats in portions so the slab does not " +
+      "overshoot, and starts early, because the heat needs time to reach the surface. " +
+      "Needs a temperature sensor in that room.",
     turbo: "Turbo", turboStop: "Stop turbo",
     turboTitle: "Quick warm-up",
     turboDesc: "The radiator and the air conditioning heat together until the room " +
@@ -291,6 +338,40 @@ function entitiesInArea(hass, areaId, domain) {
   });
   return out;
 }
+function isEnergySensor(hass, id) {
+  if (!id.startsWith("sensor.")) return false;
+  const s = hass.states[id];
+  if (!s || !s.attributes) return false;
+  const unit = String(s.attributes.unit_of_measurement || "").toLowerCase();
+  const cls = s.attributes.state_class;
+  // liczy się licznik narastający, nie chwilowa moc
+  return s.attributes.device_class === "energy"
+    && (unit === "kwh" || unit === "wh" || unit === "mwh")
+    && (cls === "total_increasing" || cls === "total");
+}
+
+/** Blokada rodzicielska bywa nazwana po swojemu — szukamy jej na tym samym urządzeniu. */
+const LOCK_WORDS = ["child_lock", "childlock", "child lock", "blokada", "kindersicherung",
+  "verrouillage", "kinderslot", "bloqueo"];
+
+function findChildLock(hass, climateId) {
+  if (!climateId || !hass.entities) return null;
+  const own = hass.entities[climateId];
+  const deviceId = own && own.device_id;
+  if (!deviceId) return null;
+
+  const hit = Object.keys(hass.entities).find((id) => {
+    const domain = id.split(".")[0];
+    if (domain !== "switch" && domain !== "lock") return false;
+    if (hass.entities[id].device_id !== deviceId) return false;
+    const st = hass.states[id];
+    const label = `${id} ${(st && st.attributes && st.attributes.friendly_name) || ""}`
+      .toLowerCase();
+    return LOCK_WORDS.some((w) => label.indexOf(w) >= 0);
+  });
+  return hit || null;
+}
+
 function isTempSensor(hass, id) {
   if (!id.startsWith("sensor.")) return false;
   const s = hass.states[id];
@@ -377,6 +458,12 @@ const STYLES = `
 .room-sub{font-size:12.5px;color:var(--klimat-ink-3);margin:2px 0 0}
 .room-sub .why{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;font-size:11.5px;
   background:color-mix(in srgb,var(--klimat-warm) 18%,transparent);color:var(--klimat-warm)}
+.lockbtn{margin-left:auto;flex:0 0 auto;width:28px;height:28px;border-radius:8px;border:none;
+  background:transparent;color:var(--klimat-ink-3);cursor:pointer;display:grid;place-items:center;
+  padding:0;transition:.15s;order:3}
+.lockbtn:hover{background:var(--klimat-surface-2);color:var(--klimat-ink-2)}
+.lockbtn.on{color:var(--klimat-warm)}
+.lockbtn + .state{margin-left:0}
 .state{margin-left:auto;font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
   padding:4px 9px;border-radius:99px;white-space:nowrap}
 .state.heat{background:color-mix(in srgb,var(--klimat-warm) 18%,transparent);color:var(--klimat-warm)}
@@ -506,6 +593,8 @@ const STYLES = `
 .chart-head em{font-style:normal;margin-left:auto;font-family:var(--klimat-mono);font-size:12.5px;
   color:var(--klimat-ink-2);font-variant-numeric:tabular-nums}
 .chart svg{display:block;width:100%;height:auto}
+.enrow{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--klimat-ink-3);margin-bottom:10px}
+.enrow b{font-family:var(--klimat-mono);font-weight:500;color:var(--klimat-ink);font-variant-numeric:tabular-nums}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;font-size:12px;color:var(--klimat-ink-3)}
 .legend i{display:inline-block;width:16px;height:0;border-top-width:2px;border-top-style:solid;
   vertical-align:middle;margin-right:5px}
@@ -620,11 +709,13 @@ class KlimatCard extends HTMLElement {
         <button class="tab" role="tab" data-view="harmonogram" aria-selected="false">${esc(this.t("tabSched"))}</button>
         <button class="tab" role="tab" data-view="reguly" aria-selected="false">${esc(this.t("tabRules"))}</button>
         <button class="tab" role="tab" data-view="historia" aria-selected="false">${esc(this.t("tabHist"))}</button>
+        <button class="tab" role="tab" data-view="zuzycie" aria-selected="false">${esc(this.t("tabEnergy"))}</button>
       </div>
       <div data-view-pokoje><div class="rooms${cfg.columns ? " cols-" + cfg.columns : ""}" data-rooms></div></div>
       <div data-view-harmonogram hidden><div data-sched></div></div>
       <div data-view-reguly hidden><div data-rules></div></div>
       <div data-view-historia hidden><div data-hist></div></div>
+      <div data-view-zuzycie hidden><div data-energy></div></div>
       <div class="ver">Klimat ${VERSION}</div>
     `;
 
@@ -658,6 +749,7 @@ class KlimatCard extends HTMLElement {
             <h3 class="room-name">${esc(r.name || this.t("room"))}</h3>
             <p class="room-sub" data-sub>—</p>
           </div>
+          <button class="lockbtn" data-lock hidden></button>
           <span class="state na" data-state>—</span>
         </div>
         <div class="readout">
@@ -698,6 +790,7 @@ class KlimatCard extends HTMLElement {
           setTimeout(() => this._loadSched(), 1200);
         } catch (e) { /* brak dodatku / add-on missing */ }
       });
+      el.querySelector("[data-lock]").addEventListener("click", () => this._toggleLock(i));
       el.querySelector("[data-turbo]").addEventListener("click", () => {
         const rn = r.name || this.t("room");
         if (this._turbo && this._turbo[rn] != null) this._stopTurbo(rn);
@@ -714,7 +807,9 @@ class KlimatCard extends HTMLElement {
     // w trakcie turbo odświeżamy stan, żeby kafelek sam zgasł po osiągnięciu celu
     clearInterval(this._poll);
     this._poll = setInterval(() => {
-      if (this._turbo && Object.keys(this._turbo).length) this._loadSched();
+      const turboOn = this._turbo && Object.keys(this._turbo).length;
+      const hasFloor = (this._config.rooms || []).some((r) => r.heat_switch);
+      if (turboOn || hasFloor) this._loadSched();
     }, 30000);
   }
 
@@ -730,7 +825,7 @@ class KlimatCard extends HTMLElement {
     ribbon.addEventListener("pointerdown", (ev) => {
       const room = this._config.rooms[idx];
       const s = this._readRoom(room, idx);
-      if (!s.primaryId) return;
+      if (!s.primaryId && !s.floorId) return;
       ev.preventDefault();
 
       const rect = ribbon.getBoundingClientRect();
@@ -765,7 +860,7 @@ class KlimatCard extends HTMLElement {
         const v = this._localSet[idx];
         if (isFinite(v)) {
           clearTimeout(this._pending[idx]);
-          this._hass.callService("climate", "set_temperature", { entity_id: s.primaryId, temperature: v });
+          this._sendTarget(idx, v);
           setTimeout(() => { delete this._localSet[idx]; this._update(); }, 3000);
         }
       };
@@ -780,18 +875,39 @@ class KlimatCard extends HTMLElement {
     this._root.querySelectorAll(".tab").forEach((t) => {
       t.setAttribute("aria-selected", t.dataset.view === v ? "true" : "false");
     });
-    ["pokoje", "harmonogram", "reguly", "historia"].forEach((name) => {
+    ["pokoje", "harmonogram", "reguly", "historia", "zuzycie"].forEach((name) => {
       this._root.querySelector(`[data-view-${name}]`).hidden = name !== v;
     });
     if ((v === "harmonogram" || v === "reguly") && !this._schedLoaded) this._loadSched();
     else if (v === "reguly") this._renderRules();
     if (v === "historia" && !this._histLoaded) this._loadHistory();
+    if (v === "zuzycie" && !this._energyLoaded) this._loadEnergy();
   }
 
   /* ---------- odczyt stanu ---------- */
 
   _readRoom(r, idx) {
     const H = this._hass;
+
+    // Podłogówka na przełączniku nie ma termostatu — temperaturę zadaną
+    // trzyma dodatek, a nie urządzenie.
+    if (r.heat_switch) {
+      const sw = H.states[r.heat_switch];
+      const rn = r.name || this.t("room");
+      let now = NaN;
+      if (r.sensor && H.states[r.sensor]) now = num(H.states[r.sensor].state);
+      const set = (idx in this._localSet)
+        ? this._localSet[idx]
+        : num((this._targets || {})[rn]);
+      let mode = "idle";
+      if (!sw || sw.state === "unavailable" || sw.state === "unknown") mode = "na";
+      else if (sw.state === "on") mode = "heat";
+      return {
+        heat: null, ac: null, primary: null, primaryId: null,
+        floorId: r.heat_switch, floor: (this._floor || {})[rn] || {},
+        now, set, mode,
+      };
+    }
     const heat = r.climate ? H.states[r.climate] : null;
     const ac = r.ac ? H.states[r.ac] : null;
     const season = this._season;
@@ -839,6 +955,10 @@ class KlimatCard extends HTMLElement {
     if (raw.indexOf("manual:") === 0) {
       const v = raw.slice(7);
       return v === "midnight" ? this.t("rMidnight") : this.t("rManual", { t: v });
+    }
+    if (raw === "no_sensor") return this.t("rNoSensor");
+    if (raw.indexOf("preheat:") === 0) {
+      return this.t("rPreheat", { t: raw.slice(8) });
     }
     if (raw.indexOf("turbo:") === 0) {
       return this.t("rTurbo", { t: fmt(parseFloat(raw.slice(6))) });
@@ -933,7 +1053,7 @@ class KlimatCard extends HTMLElement {
       mark.style.left = pctPos(s.now) + "%";
       mark.style.visibility = isFinite(s.now) ? "visible" : "hidden";
 
-      el.querySelectorAll(".step").forEach((b) => { b.disabled = !s.primaryId; });
+      el.querySelectorAll(".step").forEach((b) => { b.disabled = !(s.primaryId || s.floorId); });
 
       const winState = r.window ? this._hass.states[r.window] : null;
       const winOpen = !!(winState && winState.state === "on");
@@ -955,6 +1075,7 @@ class KlimatCard extends HTMLElement {
       tb.textContent = turboOn ? this.t("turboStop") : this.t("turbo");
       tb.classList.toggle("on", turboOn);
 
+      this._renderLock(el, r, i);
       this._renderDevices(el.querySelector("[data-devices]"), r, s);
     });
   }
@@ -976,6 +1097,15 @@ class KlimatCard extends HTMLElement {
       const v = !e || e.state === "unavailable" ? this.t("missing") : (e.state === "off" ? this.t("off") : e.state);
       bits.push({ k: r.ac_name || this.t("ac"), v, led: on ? "cool" : "",
         muted: !e || e.state === "unavailable", id: r.ac, active: s.primaryId === r.ac });
+    }
+    if (r.heat_switch) {
+      const e = this._hass.states[r.heat_switch];
+      const on = e && e.state === "on";
+      const duty = num((s.floor || {}).duty);
+      const v = !e ? this.t("missing")
+        : (isFinite(duty) ? Math.round(duty * 100) + "%" : (on ? this.t("on") : this.t("off")));
+      bits.push({ k: this.t("floor"), v, led: on ? "on" : "",
+        muted: !e, id: r.heat_switch, active: on });
     }
     if (r.sensor) {
       const e = this._hass.states[r.sensor];
@@ -1003,21 +1133,84 @@ class KlimatCard extends HTMLElement {
     }
   }
 
+  /** Encja blokady: ręcznie wskazana albo znaleziona na urządzeniu głowicy. */
+  _lockEntity(r, idx) {
+    if (r.child_lock) return r.child_lock;
+    this._lockCache = this._lockCache || {};
+    if (!(idx in this._lockCache)) {
+      this._lockCache[idx] = findChildLock(this._hass, r.climate) || null;
+    }
+    return this._lockCache[idx];
+  }
+
+  _renderLock(el, r, idx) {
+    const btn = el.querySelector("[data-lock]");
+    const id = this._lockEntity(r, idx);
+    const st = id ? this._hass.states[id] : null;
+    if (!st || st.state === "unavailable" || st.state === "unknown") {
+      btn.hidden = true;
+      return;
+    }
+    const locked = st.state === "on" || st.state === "locked";
+    btn.hidden = false;
+    btn.classList.toggle("on", locked);
+    btn.title = this.t(locked ? "lockOn" : "lockOff");
+    btn.setAttribute("aria-label", btn.title);
+    btn.setAttribute("aria-pressed", locked ? "true" : "false");
+    const shackle = locked
+      ? "M8 11V7a4 4 0 0 1 8 0v4"
+      : "M8 11V7a4 4 0 0 1 7.5-2";
+    btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <rect x="4" y="11" width="16" height="10" rx="2"/><path d="${shackle}"/></svg>`;
+  }
+
+  _toggleLock(idx) {
+    const r = this._config.rooms[idx];
+    const id = this._lockEntity(r, idx);
+    const st = id ? this._hass.states[id] : null;
+    if (!st) return;
+    if (id.startsWith("lock.")) {
+      this._hass.callService("lock", st.state === "locked" ? "unlock" : "lock",
+        { entity_id: id });
+    } else {
+      this._hass.callService("switch", "toggle", { entity_id: id });
+    }
+  }
+
   _moreInfo(entityId) {
     const ev = new Event("hass-more-info", { bubbles: true, composed: true });
     ev.detail = { entityId };
     this.dispatchEvent(ev);
   }
 
+  _sendTarget(idx, value) {
+    const r = this._config.rooms[idx];
+    const s = this._readRoom(r, idx);
+    if (s.primaryId) {
+      this._hass.callService("climate", "set_temperature",
+        { entity_id: s.primaryId, temperature: value });
+      return;
+    }
+    if (s.floorId) {
+      this._hass.connection
+        .sendMessagePromise({
+          type: "klimat/room/target", room: r.name || this.t("room"), temp: value,
+        })
+        .then(() => setTimeout(() => this._loadSched(), 800))
+        .catch(() => {});
+    }
+  }
+
   _nudge(idx, dir) {
     const r = this._config.rooms[idx];
     const s = this._readRoom(r, idx);
-    if (!s.primaryId) return;
+    if (!s.primaryId && !s.floorId) return;
 
     const attrs = (s.primary && s.primary.attributes) || {};
     const step = num(attrs.target_temp_step) || this._config.step || 0.5;
-    const min = num(attrs.min_temp);
-    const max = num(attrs.max_temp);
+    const min = s.floorId ? 10 : num(attrs.min_temp);
+    const max = s.floorId ? 30 : num(attrs.max_temp);
     const base = isFinite(s.set) ? s.set : (isFinite(s.now) ? s.now : 20);
     let next = base + dir * step;
     if (isFinite(min)) next = Math.max(min, next);
@@ -1029,7 +1222,7 @@ class KlimatCard extends HTMLElement {
 
     clearTimeout(this._pending[idx]);
     this._pending[idx] = setTimeout(() => {
-      this._hass.callService("climate", "set_temperature", { entity_id: s.primaryId, temperature: next });
+      this._sendTarget(idx, next);
       setTimeout(() => { delete this._localSet[idx]; this._update(); }, 3000);
     }, 450);
   }
@@ -1122,6 +1315,149 @@ class KlimatCard extends HTMLElement {
     this._root.appendChild(bg);
   }
 
+
+  /* ================= ZUŻYCIE / ENERGY ================= */
+
+  get _currency() {
+    const c = this._hass && this._hass.config && this._hass.config.currency;
+    return c || (this._lang === "pl" ? "zł" : "");
+  }
+
+  _money(kwh) {
+    const price = num(this._config.price);
+    if (!isFinite(price) || !isFinite(kwh)) return null;
+    const v = kwh * price;
+    const txt = v.toFixed(2).replace(".", DEC);
+    return this._currency ? `${txt} ${this._currency}` : txt;
+  }
+
+  async _loadEnergy() {
+    this._energyLoaded = true;
+    const box = this._root.querySelector("[data-energy]");
+    const rooms = (this._config.rooms || []).filter((r) => r.energy);
+    if (!rooms.length) {
+      box.innerHTML = `<p class="soon">${esc(this.t("enNone"))}</p>`;
+      return;
+    }
+    box.innerHTML = `<p class="soon">${esc(this.t("loading"))}</p>`;
+
+    // dwanaście pełnych miesięcy wstecz, licząc od pierwszego dnia bieżącego
+    const start = new Date();
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    start.setMonth(start.getMonth() - 11);
+
+    try {
+      const res = await this._hass.connection.sendMessagePromise({
+        type: "recorder/statistics_during_period",
+        start_time: start.toISOString(),
+        statistic_ids: rooms.map((r) => r.energy),
+        period: "month",
+        types: ["change"],
+      });
+      this._energy = res || {};
+      this._energyErr = null;
+    } catch (err) {
+      this._energyErr = err && err.message ? err.message : String(err);
+    }
+    this._renderEnergy();
+  }
+
+  /** Statystyki na 12 pozycji, od najstarszego miesiąca do bieżącego. */
+  _months(entityId) {
+    const now = new Date();
+    const out = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      out.push({ d, v: NaN });
+    }
+    const rows = (this._energy || {})[entityId] || [];
+    rows.forEach((row) => {
+      const raw = row.start;
+      const d = new Date(typeof raw === "number" ? raw : raw);
+      if (isNaN(d.getTime())) return;
+      const slot = out.find((o) => o.d.getFullYear() === d.getFullYear()
+        && o.d.getMonth() === d.getMonth());
+      if (slot) slot.v = num(row.change);
+    });
+    return out;
+  }
+
+  _renderEnergy() {
+    const box = this._root.querySelector("[data-energy]");
+    if (!box) return;
+    if (this._energyErr) {
+      box.innerHTML = `<div class="sched-err">${esc(this.t("enErr"))}<br>
+        <span style="opacity:.7">${esc(this._energyErr)}</span></div>`;
+      return;
+    }
+    if (!this._energy) return;
+
+    const rooms = (this._config.rooms || []).filter((r) => r.energy);
+    const monthLabel = (d) =>
+      d.toLocaleDateString(this._lang === "pl" ? "pl-PL" : "en-GB", { month: "short" });
+
+    const totals = new Array(12).fill(0);
+    const cards = rooms.map((r, ri) => {
+      const series = this._months(r.energy);
+      series.forEach((m, i) => { if (isFinite(m.v)) totals[i] += m.v; });
+
+      const nowV = series[11].v;
+      const prevV = series[10].v;
+      const max = Math.max(...series.map((m) => (isFinite(m.v) ? m.v : 0)), 0.001);
+
+      const W = 320, H = 110, PB = 18, gap = 3;
+      const bw = (W - gap * 11) / 12;
+      const bars = series.map((m, i) => {
+        const v = isFinite(m.v) ? m.v : 0;
+        const h = Math.max(v > 0 ? 2 : 0, ((H - PB) * v) / max);
+        const x = i * (bw + gap);
+        const col = i === 11 ? "var(--klimat-warm)" : "var(--klimat-ink-3)";
+        return `<rect x="${x.toFixed(1)}" y="${(H - PB - h).toFixed(1)}"
+          width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${col}"><title>${
+            esc(monthLabel(m.d))} ${fmt(m.v)} kWh</title></rect>
+          <text x="${(x + bw / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle"
+            font-size="8.5" fill="var(--klimat-ink-3)" font-family="monospace"
+            >${esc(monthLabel(m.d).slice(0, 3))}</text>`;
+      }).join("");
+
+      const cost = this._money(nowV);
+      return `
+        <div class="chart">
+          <div class="chart-head">
+            <h4>${esc(r.name || this.t("room"))}</h4>
+            <em>${isFinite(nowV) ? fmt(nowV) + " kWh" : "—"}</em>
+          </div>
+          <div class="enrow">
+            <span>${esc(this.t("enThisMonth"))}: <b>${isFinite(nowV) ? fmt(nowV) + " kWh" : "—"}</b>${
+              cost ? ` · <b>${esc(cost)}</b>` : ""}</span>
+            <span>${esc(this.t("enLastMonth"))}: <b>${isFinite(prevV) ? fmt(prevV) + " kWh" : "—"}</b></span>
+          </div>
+          <svg viewBox="0 0 ${W} ${H}" role="img"
+            aria-label="${esc(r.name || "")} — ${esc(this.t("enYear"))}">${bars}</svg>
+        </div>`;
+    }).join("");
+
+    const sumNow = totals[11];
+    const sumPrev = totals[10];
+    const sumCost = this._money(sumNow);
+    const summary = rooms.length > 1 ? `
+      <div class="chart" style="margin-bottom:14px">
+        <div class="chart-head">
+          <h4>${esc(this.t("enTotal"))}</h4>
+          <em>${fmt(sumNow)} kWh</em>
+        </div>
+        <div class="enrow">
+          <span>${esc(this.t("enThisMonth"))}: <b>${fmt(sumNow)} kWh</b>${
+            sumCost ? ` · <b>${esc(sumCost)}</b>` : ""}</span>
+          <span>${esc(this.t("enLastMonth"))}: <b>${fmt(sumPrev)} kWh</b></span>
+        </div>
+      </div>` : "";
+
+    box.innerHTML = `${summary}<div class="charts">${cards}</div>
+      <p class="sched-note">${esc(this.t("enHint"))}</p>`;
+  }
+
   /* ================= HARMONOGRAM / SCHEDULE ================= */
 
   async _loadSched() {
@@ -1133,6 +1469,8 @@ class KlimatCard extends HTMLElement {
       this._reasons = (cfg && cfg.reasons) || {};
       this._turbo = (cfg && cfg.turbo) || {};
       this._canTurbo = (cfg && cfg.can_turbo) || [];
+      this._targets = (cfg && cfg.targets) || {};
+      this._floor = (cfg && cfg.floor) || {};
       this._sched = this._mergeSched(cfg);
       this._schedErr = null;
       if (this._roomsDiffer(cfg)) this._saveSched();
@@ -1162,6 +1500,7 @@ class KlimatCard extends HTMLElement {
         heat: r.climate || null,
         cool: r.ac || null,
         sensor: r.sensor || null,
+        heat_switch: r.heat_switch || null,
         window: r.window || null,
         days: prev && Array.isArray(prev.days) && prev.days.length === 7
           ? prev.days
@@ -1181,6 +1520,7 @@ class KlimatCard extends HTMLElement {
       return (t.heat || null) !== (r.heat || null)
         || (t.cool || null) !== (r.cool || null)
         || (t.sensor || null) !== (r.sensor || null)
+        || (t.heat_switch || null) !== (r.heat_switch || null)
         || (t.window || null) !== (r.window || null);
     });
   }
@@ -1841,6 +2181,9 @@ class KlimatCardEditor extends HTMLElement {
     const weathers = this._ids("weather");
     const bools = this._ids("input_boolean");
     const binaries = this._ids("binary_sensor");
+    const switches = this._ids("switch");
+    const energies = this._ids("sensor", (id) => isEnergySensor(H, id));
+    const locks = this._ids("switch").concat(this._ids("lock"));
     const areas = H && H.areas ? Object.keys(H.areas) : [];
 
     const roomHtml = (r, i) => `
@@ -1856,10 +2199,19 @@ class KlimatCardEditor extends HTMLElement {
           <select data-k="climate">${this._opts(climates, r.climate, this.t("edNone"))}</select></div>
         <div class="f"><label class="lab">${esc(this.t("edAc"))}</label>
           <select data-k="ac">${this._opts(climates, r.ac, this.t("edNone"))}</select></div>
+        <div class="f"><label class="lab">${esc(this.t("edFloor"))}</label>
+          <select data-k="heat_switch">${this._opts(switches, r.heat_switch, this.t("edNone"))}</select>
+          <p class="hintline">${esc(this.t("edFloorHint"))}</p></div>
         <div class="f"><label class="lab">${esc(this.t("edSensor"))}</label>
           <select data-k="sensor">${this._opts(temps, r.sensor, this.t("edSensorNone"))}</select></div>
+        <div class="f"><label class="lab">${esc(this.t("edEnergy"))}</label>
+          <select data-k="energy">${this._opts(energies, r.energy, this.t("edNone"))}</select>
+          <p class="hintline">${esc(this.t("edEnergyHint"))}</p></div>
         <div class="f"><label class="lab">${esc(this.t("edWindow"))}</label>
           <select data-k="window">${this._opts(binaries, r.window, this.t("edNone"))}</select></div>
+        <div class="f"><label class="lab">${esc(this.t("edLock"))}</label>
+          <select data-k="child_lock">${this._opts(locks, r.child_lock, this.t("edNone"))}</select>
+          <p class="hintline">${esc(this.t("edLockHint"))}</p></div>
         <div class="f"><label class="lab">${esc(this.t("edPrimary"))}</label>
           <select data-k="primary">
             <option value=""${!r.primary ? " selected" : ""}>${esc(this.t("edPrimaryAuto"))}</option>
@@ -1889,6 +2241,11 @@ class KlimatCardEditor extends HTMLElement {
           <option value="3"${c.columns == 3 ? " selected" : ""}>${esc(this.t("edLayout3"))}</option>
         </select>
         <p class="hintline">${esc(this.t("edLayoutHint"))}</p>
+      </div>
+      <div class="sec">
+        <label class="lab">${esc(this.t("edPrice"))}</label>
+        <input type="number" step="0.01" min="0" id="price" value="${c.price != null ? c.price : ""}">
+        <p class="hintline">${esc(this.t("edPriceHint"))}</p>
       </div>
       <div class="sec">
         <label class="lab">${esc(this.t("edOutside"))}</label>
@@ -1925,6 +2282,11 @@ class KlimatCardEditor extends HTMLElement {
     const c = this._config;
 
     sr.getElementById("title").addEventListener("input", (e) => { c.title = e.target.value; this._emit(); });
+    sr.getElementById("price").addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      if (isFinite(v)) c.price = v; else delete c.price;
+      this._emit();
+    });
     sr.getElementById("columns").addEventListener("change", (e) => {
       if (e.target.value) c.columns = parseInt(e.target.value, 10); else delete c.columns;
       this._emit();

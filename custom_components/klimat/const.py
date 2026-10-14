@@ -33,7 +33,18 @@ DEFAULT_DATA = {
 }
 
 # wersja używana do odświeżania adresu karty (omija pamięć podręczną przeglądarki)
-VERSION = "1.1.0"
+VERSION = "1.3.0"
 
 # po tylu minutach turbo gasi się samo, choćby cel był nieosiągalny
 TURBO_MAX_MIN = 120
+
+# ---------- ogrzewanie podłogowe ----------
+# Podłogówka ma bezwładność liczoną w godzinach, więc nie gonimy temperatury
+# włącz/wyłącz, tylko grzejemy porcjami: w każdym cyklu tyle, ile wynika
+# z różnicy do celu. Dzięki temu płyta się nie przeładowuje.
+FLOOR_CYCLE_MIN = 20       # długość cyklu w minutach
+FLOOR_SPAN = 1.5           # przy takiej różnicy grzejemy pełną porcją
+FLOOR_MIN_ON_MIN = 3       # krótszych załączeń nie ma sensu robić
+FLOOR_DEFAULT_RATE = 0.8   # °C na godzinę, zanim Klimat zmierzy własną wartość
+FLOOR_MAX_LEAD_MIN = 180   # najdalsze wyprzedzenie, jakie dopuszczamy
+LEARN_STORAGE_KEY = "klimat.learn"

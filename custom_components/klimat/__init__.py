@@ -27,6 +27,8 @@ from .card import async_setup_card
 from .const import (
     DOMAIN, STORAGE_KEY, STORAGE_VERSION, DEFAULT_DATA, TICK_SECONDS,
     TURBO_MAX_MIN, VERSION,
+    FLOOR_CYCLE_MIN, FLOOR_SPAN, FLOOR_MIN_ON_MIN, FLOOR_DEFAULT_RATE,
+    FLOOR_MAX_LEAD_MIN, LEARN_STORAGE_KEY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +57,16 @@ class KlimatData:
         self._off_block: dict[str, str] = {}
         # pokoje w trybie turbo: {nazwa: {"temp": float, "started": datetime}}
         self._turbo: dict[str, dict[str, Any]] = {}
+        # podłogówka: bieżący cykl grzania, próbki do nauki i ręczne nadpisania
+        self._cycle: dict[str, dict[str, Any]] = {}
+        self._samples: dict[str, dict[str, Any]] = {}
+        self._manual: dict[str, dict[str, Any]] = {}
+        # co pokazać na kafelku: zadana temperatura i stan podłogówki
+        self.targets: dict[str, float] = {}
+        self.floor: dict[str, dict[str, Any]] = {}
+        # zmierzone tempo grzania pokojów — przeżywa restart HA
+        self._learn_store: Store = Store(hass, STORAGE_VERSION, LEARN_STORAGE_KEY)
+        self.learn: dict[str, Any] = {"rate": {}}
 
     # ---------- zapis i odczyt ----------
 
@@ -62,6 +74,9 @@ class KlimatData:
         stored = await self._store.async_load()
         if stored:
             self.data = _with_defaults(stored)
+        learned = await self._learn_store.async_load()
+        if learned:
+            self.learn = learned
 
     async def async_save(self, data: dict[str, Any]) -> None:
         self.data = _with_defaults(data or {})
@@ -203,6 +218,48 @@ class KlimatData:
         except (TypeError, ValueError):
             return None, None
 
+    def _temp_of(self, block: dict) -> float | None:
+        """Temperatura bloku — z poziomu, jeśli blok się na niego powołuje."""
+        if block.get("lvl"):
+            temp = self._level_temp(block["lvl"])
+            if temp is not None:
+                return temp
+        try:
+            return float(block.get("t"))
+        except (TypeError, ValueError):
+            return None
+
+    def next_block(self, room: dict) -> tuple[float | None, float | None]:
+        """(temperatura kolejnego bloku, za ile minut się zacznie)."""
+        days = room.get("days") or []
+        if len(days) != 7:
+            return None, None
+        now = dt_util.now()
+        hour = now.hour + now.minute / 60
+
+        today = sorted(days[now.weekday()] or [], key=lambda b: float(b.get("h", 0)))
+        for b in today:
+            h = float(b.get("h", 0))
+            if h > hour:
+                return self._temp_of(b), (h - hour) * 60
+
+        tomorrow = sorted(days[(now.weekday() + 1) % 7] or [], key=lambda b: float(b.get("h", 0)))
+        if tomorrow:
+            b = tomorrow[0]
+            return self._temp_of(b), (24 - hour + float(b.get("h", 0))) * 60
+        return None, None
+
+    @staticmethod
+    def is_floor(room: dict) -> bool:
+        return bool(room.get("heat_switch"))
+
+    def heat_rate(self, name: str) -> float:
+        """Ile stopni na godzinę ten pokój potrafi urosnąć — zmierzone u siebie."""
+        try:
+            return float((self.learn.get("rate") or {}).get(name, FLOOR_DEFAULT_RATE))
+        except (TypeError, ValueError):
+            return FLOOR_DEFAULT_RATE
+
     def target_entity(self, room: dict) -> str | None:
         heat, cool = room.get("heat"), room.get("cool")
         if self._is_summer():
@@ -286,6 +343,31 @@ class KlimatData:
             if len(days) == 7 else None
         )
 
+        name = room.get("name") or "?"
+
+        # Ręczne ustawienie w pokoju bez termostatu (podłogówka na przełączniku) —
+        # obowiązuje do końca bieżącego bloku, tak jak wszędzie indziej.
+        manual = self._manual.get(name)
+        if manual and manual.get("block") == block_key:
+            temp = float(manual["temp"])
+            reason = self._until_label(name, "manual")
+        elif manual:
+            self._manual.pop(name, None)
+
+        # Podłogówka grzeje z wyprzedzeniem: zanim wybije godzina z harmonogramu,
+        # musi zdążyć przepchnąć ciepło przez wylewkę.
+        if self.is_floor(room) and reason == "schedule":
+            nxt, mins = self.next_block(room)
+            now_t = self.room_temp(room)
+            if nxt is not None and mins is not None and now_t is not None:
+                need = nxt - now_t
+                if need > 0.1 and (temp is None or nxt > temp):
+                    lead = min(FLOOR_MAX_LEAD_MIN, need / self.heat_rate(name) * 60)
+                    if mins <= lead:
+                        temp = nxt
+                        at = dt_util.now() + timedelta(minutes=mins)
+                        reason = f"preheat:{at.hour:02d}:{at.minute:02d}"
+
         away = rules.get("away", {})
         if away.get("enabled") and self._nobody_home():
             t = float(away.get("temp", 17))
@@ -299,6 +381,102 @@ class KlimatData:
                 temp, reason = t, "window"
 
         return temp, reason, block_key
+
+    # ---------- ogrzewanie podłogowe ----------
+
+    @staticmethod
+    def _duty(error: float) -> float:
+        """Jaka część cyklu ma grzać, przy takiej różnicy do celu."""
+        if error <= 0:
+            return 0.0
+        duty = min(1.0, error / FLOOR_SPAN)
+        if duty * FLOOR_CYCLE_MIN < FLOOR_MIN_ON_MIN:
+            return 0.0          # kilkusekundowe mrugnięcie przekaźnikiem nic nie da
+        if duty > 0.85:
+            return 1.0
+        return duty
+
+    def _learn_rate(self, name: str, measured: float, heating: bool) -> None:
+        """Mierzy, ile stopni na godzinę rośnie ten pokój, gdy grzeje."""
+        now = dt_util.utcnow()
+        prev = self._samples.get(name)
+
+        if not (heating and prev and prev.get("heating")):
+            self._samples[name] = {"t": now, "temp": measured, "heating": heating}
+            return
+
+        hours = (now - prev["t"]).total_seconds() / 3600
+        if hours < 0.25:
+            return              # za krótko, żeby cokolwiek z tego wyliczyć
+
+        delta = measured - prev["temp"]
+        self._samples[name] = {"t": now, "temp": measured, "heating": heating}
+        if delta <= 0.05:
+            return
+
+        rate = max(0.2, min(4.0, delta / hours))
+        old = self.heat_rate(name)
+        new = round(old * 0.7 + rate * 0.3, 3)
+        if abs(new - old) < 0.02:
+            return
+        self.learn.setdefault("rate", {})[name] = new
+        _LOGGER.debug("Klimat: %s grzeje %.2f °C/h", name, new)
+        self.hass.async_create_task(self._learn_store.async_save(self.learn))
+
+    async def _run_floor(self, room: dict, name: str) -> None:
+        """Podłogówka na przełączniku — grzejemy porcjami, nie włącz/wyłącz."""
+        switch = room["heat_switch"]
+        state = self.hass.states.get(switch)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return
+
+        temp, reason, _block = self.desired_for_room(room)
+        measured = self.room_temp(room)
+        if measured is None:
+            self.reasons[name] = "no_sensor"
+            return
+        if temp is None:
+            return
+
+        self._learn_rate(name, measured, state.state == "on")
+
+        now = dt_util.utcnow()
+        cycle = self._cycle.get(name)
+        if cycle is None or (now - cycle["start"]).total_seconds() >= FLOOR_CYCLE_MIN * 60:
+            cycle = {"start": now, "duty": self._duty(temp - measured)}
+            self._cycle[name] = cycle
+
+        elapsed = (now - cycle["start"]).total_seconds() / 60
+        want_on = elapsed < cycle["duty"] * FLOOR_CYCLE_MIN
+
+        if want_on and state.state != "on":
+            await self.hass.services.async_call(
+                "switch", "turn_on", {"entity_id": switch}, blocking=False
+            )
+        elif not want_on and state.state == "on":
+            await self.hass.services.async_call(
+                "switch", "turn_off", {"entity_id": switch}, blocking=False
+            )
+
+        self.reasons[name] = reason
+        self.targets[name] = temp
+        self.floor[name] = {
+            "duty": round(cycle["duty"], 2),
+            "on": want_on,
+            "rate": round(self.heat_rate(name), 2),
+        }
+
+    async def async_set_target(self, name: str, temp: float) -> None:
+        """Ręczne zadanie temperatury w pokoju, który nie ma termostatu."""
+        room = next(
+            (r for r in self.data.get("rooms", []) if (r.get("name") or "?") == name), None
+        )
+        block_key = "brak"
+        if room:
+            _t, _r, block_key = self.desired_for_room(room)
+        self._manual[name] = {"temp": float(temp), "block": block_key}
+        self._cycle.pop(name, None)
+        await self.async_apply()
 
     # ---------- turbo ----------
 
@@ -413,6 +591,8 @@ class KlimatData:
         """Anuluje ręczne nadpisanie w pokoju i oddaje stery harmonogramowi."""
         self._applied.pop(name, None)
         self._off_block.pop(name, None)
+        self._manual.pop(name, None)
+        self._cycle.pop(name, None)
         if name in self._turbo:
             room = next(
                 (r for r in self.data.get("rooms", []) if (r.get("name") or "?") == name), None
@@ -428,6 +608,12 @@ class KlimatData:
 
         for room in self.data.get("rooms", []):
             name = room.get("name") or "?"
+
+            # podłogówka na przełączniku nie ma termostatu — własna ścieżka
+            if self.is_floor(room):
+                await self._run_floor(room, name)
+                continue
+
             target = self.target_entity(room)
             if not target:
                 continue
@@ -507,6 +693,7 @@ class KlimatData:
                 continue
 
             self.reasons[name] = reason
+            self.targets[name] = temp
 
             if current is not None and abs(float(current) - temp) < 0.05:
                 self._applied[name] = {"block": block_key, "sent": temp}
@@ -558,6 +745,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_resume_room)
         websocket_api.async_register_command(hass, ws_turbo_start)
         websocket_api.async_register_command(hass, ws_turbo_stop)
+        websocket_api.async_register_command(hass, ws_set_target)
         hass.data[DOMAIN]["ws_registered"] = True
 
     await data.async_apply()
@@ -588,6 +776,8 @@ def ws_get_config(hass: HomeAssistant, connection, msg) -> None:
     result = dict(store.data)
     result["reasons"] = store.reasons
     result["turbo"] = {k: v.get("temp") for k, v in store._turbo.items()}
+    result["targets"] = store.targets
+    result["floor"] = store.floor
     result["can_turbo"] = [
         (r.get("name") or "?") for r in store.data.get("rooms", []) if store.can_turbo(r)
     ]
@@ -621,6 +811,24 @@ async def ws_resume_room(hass: HomeAssistant, connection, msg) -> None:
         connection.send_error(msg["id"], "not_ready", "Dodatek Klimat nie jest uruchomiony.")
         return
     await store.async_resume(msg["room"])
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "klimat/room/target",
+        vol.Required("room"): str,
+        vol.Required("temp"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def ws_set_target(hass: HomeAssistant, connection, msg) -> None:
+    """Ręczna temperatura w pokoju bez termostatu (podłogówka)."""
+    store = _store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_ready", "Dodatek Klimat nie jest uruchomiony.")
+        return
+    await store.async_set_target(msg["room"], msg["temp"])
     connection.send_result(msg["id"], {"ok": True})
 
 
