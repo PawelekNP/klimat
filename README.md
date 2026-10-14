@@ -4,7 +4,7 @@ Heating and cooling for Home Assistant — one panel for every room, a weekly
 schedule, rules, history, and a summer/winter switch.
 The whole interface follows the language set in Home Assistant (English and Polish).
 
-![version](https://img.shields.io/badge/version-1.0.0-E8833A)
+![version](https://img.shields.io/badge/version-1.1.0-E8833A)
 ![hacs](https://img.shields.io/badge/HACS-custom%20repository-41BDF5)
 
 ## Install
@@ -79,8 +79,9 @@ temperature, split it or remove it; drag the handles between blocks to move a bo
 in 15-minute steps. Named levels (Comfort / Eco / Night / Frost) change every block
 that uses them at once.
 
-The schedule never wakes a device that is switched off. If you turn a radiator off
-by hand, it stays off.
+Switch a radiator off by hand and it stays off until the current block ends — then the
+schedule switches it back on, so a radiator turned off in September is not still off in
+December. Rules never switch anything on. Both behaviours can be changed in **Rules**.
 
 **Rules.** Rules take precedence over the schedule and only ever work towards saving —
 they can lower a temperature, never raise it.
@@ -89,6 +90,13 @@ they can lower a temperature, never raise it.
   not shut the radiator down.
 - *Nobody home* — when everyone listed is away, every room drops to a standby temperature.
 - *Never heat and cool at once* — only one device per room, chosen by the season switch.
+
+**Turbo.** In a room that has both a radiator and air conditioning that can heat, the
+tile gets a **Turbo** button. Set a temperature and both devices heat together until the
+room reaches it — then the air conditioning switches off on its own and the schedule takes
+over again. This is the one exception to the never-heat-and-cool-at-once rule. If the
+target turns out to be unreachable, turbo gives up after two hours rather than running all
+evening.
 
 **History.** Measured versus target temperature per room, over 24 hours, 3 days or a week.
 If the solid line never catches up with the dashed one, that radiator cannot keep up.
@@ -144,13 +152,21 @@ temperaturę, podzielić go na pół albo usunąć; uchwyty między blokami prze
 i w prawo, skok co 15 minut. Nazwane poziomy (Komfort / Eko / Noc / Mróz) zmieniają
 naraz wszystkie bloki, które z nich korzystają.
 
-Harmonogram nie rusza urządzeń, które są wyłączone — jeśli wyłączysz grzejnik ręcznie,
-zostanie wyłączony.
+Grzejnik wyłączony ręcznie zostaje wyłączony do końca bieżącego bloku — od następnego
+Klimat włącza go z powrotem, żeby zgaszony we wrześniu nie został zgaszony do grudnia.
+Reguły nigdy niczego nie włączają. Jedno i drugie przestawisz w **Regułach**.
 
 **Reguły.** Mają pierwszeństwo nad harmonogramem i zawsze działają w stronę
 oszczędzania — mogą obniżyć temperaturę, nigdy jej nie podniosą: otwarte okno
 (z opóźnieniem, żeby wpuszczenie kota nie gasiło grzejnika), nikogo w domu,
 oraz zakaz grzania i chłodzenia naraz.
+
+**Turbo.** W pokoju, który ma i grzejnik, i klimatyzację umiejącą grzać, na kafelku
+pojawia się przycisk **Turbo**. Zadajesz temperaturę, a oba urządzenia grzeją razem,
+dopóki pokój jej nie osiągnie — potem klimatyzacja gaśnie sama i wraca harmonogram.
+To jedyny wyjątek od zasady, że grzejnik i klimatyzacja nigdy nie pracują naraz.
+Gdyby cel okazał się nieosiągalny, turbo poddaje się po dwóch godzinach, zamiast grzać
+do wieczora.
 
 **Historia.** Temperatura zmierzona kontra zadana, dla każdego pokoju, z 24 godzin,
 3 dni albo tygodnia. Jeśli linia ciągła nigdy nie dogania przerywanej, grzejnik

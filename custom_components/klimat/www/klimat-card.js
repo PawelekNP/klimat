@@ -1,10 +1,10 @@
 /*!
  * Klimat Card — ogrzewanie i chłodzenie w Home Assistancie.
  * Klimat Card — heating and cooling for Home Assistant.
- * v1.0.0 — MIT
+ * v1.1.0 — MIT
  */
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 /* ================= tłumaczenia / translations ================= */
 
@@ -26,6 +26,18 @@ const STR = {
     resume: "Wróć do harmonogramu",
     rManual: "ręcznie do {t}", rMidnight: "ręcznie do północy",
     rWindow: "otwarte okno", rAway: "nikogo w domu", rOff: "wyłączone ręcznie",
+    rOffUntil: "wyłączone do {t}", rOffMidnight: "wyłączone do północy",
+    rTurbo: "turbo do {t}°",
+    turbo: "Turbo", turboStop: "Zatrzymaj turbo",
+    turboTitle: "Szybkie dogrzanie",
+    turboDesc: "Grzejnik i klimatyzacja grzeją razem, aż pokój osiągnie zadaną " +
+      "temperaturę. Potem klimatyzacja gaśnie i wraca harmonogram.",
+    turboStart: "Włącz turbo", cancel: "Anuluj", turboTemp: "Dogrzej do",
+    ruleWakeT: "Harmonogram może włączać urządzenia",
+    ruleWakeD: "Gdy wyłączysz grzejnik ręcznie, zostaje wyłączony do końca " +
+      "bieżącego bloku harmonogramu. Od następnego bloku Klimat włącza go z powrotem — " +
+      "żeby zgaszony we wrześniu grzejnik nie został zgaszony do grudnia. " +
+      "Reguły nigdy niczego nie włączają, działają wyłącznie w stronę oszczędzania.",
     levels: "Poziomy temperatur",
     days: ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Nd"],
     lvComfort: "Komfort", lvEco: "Eko", lvNight: "Noc", lvFrost: "Mróz",
@@ -34,7 +46,7 @@ const STR = {
     noRooms: "Najpierw dodaj pokoje w edytorze karty.",
     schedHint: "Dotknij bloku, żeby zmienić temperaturę, podzielić go albo usunąć. " +
       "Pionowe uchwyty między blokami możesz przeciągać w lewo i w prawo — skok co 15 minut. " +
-      "Harmonogram nie rusza urządzeń, które są wyłączone.",
+      "Urządzenie wyłączone ręcznie zostaje wyłączone do końca bieżącego bloku.",
     dragHint: "Przeciągnij, żeby przesunąć granicę",
     ownTemp: "Własna temperatura", split: "Podziel na pół", delBlock: "Usuń blok", done: "Gotowe",
     rulesHint: "Reguły mają pierwszeństwo nad harmonogramem i zawsze działają w stronę " +
@@ -102,6 +114,19 @@ const STR = {
     resume: "Back to schedule",
     rManual: "manual until {t}", rMidnight: "manual until midnight",
     rWindow: "window open", rAway: "nobody home", rOff: "switched off by hand",
+    rOffUntil: "off until {t}", rOffMidnight: "off until midnight",
+    rTurbo: "turbo to {t}°",
+    turbo: "Turbo", turboStop: "Stop turbo",
+    turboTitle: "Quick warm-up",
+    turboDesc: "The radiator and the air conditioning heat together until the room " +
+      "reaches the temperature you set. Then the air conditioning switches off and " +
+      "the schedule takes over again.",
+    turboStart: "Start turbo", cancel: "Cancel", turboTemp: "Warm up to",
+    ruleWakeT: "The schedule may switch devices on",
+    ruleWakeD: "Switch a radiator off by hand and it stays off until the current " +
+      "schedule block ends. From the next block Klimat switches it back on — so a " +
+      "radiator turned off in September is not still off in December. " +
+      "Rules never switch anything on; they only ever save energy.",
     levels: "Temperature levels",
     days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     lvComfort: "Comfort", lvEco: "Eco", lvNight: "Night", lvFrost: "Frost",
@@ -110,7 +135,7 @@ const STR = {
     noRooms: "Add rooms in the card editor first.",
     schedHint: "Tap a block to change its temperature, split it or remove it. " +
       "Drag the handles between blocks left and right — 15 minute steps. " +
-      "The schedule never wakes a device that is switched off.",
+      "A device switched off by hand stays off until the current block ends.",
     dragHint: "Drag to move the boundary",
     ownTemp: "Custom temperature", split: "Split in half", delBlock: "Remove block", done: "Done",
     rulesHint: "Rules take precedence over the schedule and always work towards saving — " +
@@ -341,6 +366,12 @@ const STYLES = `
 .resume{align-self:flex-start;border:1px solid var(--klimat-warm);background:transparent;color:var(--klimat-warm);
   border-radius:9px;padding:6px 12px;font:inherit;font-size:12.5px;cursor:pointer;transition:.15s}
 .resume:hover{background:color-mix(in srgb,var(--klimat-warm) 14%,transparent)}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.acts:empty{display:none}
+.turbo{border-color:var(--klimat-ink-3);color:var(--klimat-ink-2)}
+.turbo:hover{border-color:var(--klimat-ink);color:var(--klimat-ink);background:var(--klimat-surface-2)}
+.turbo.on{background:var(--klimat-warm);border-color:var(--klimat-warm);color:#17150F;font-weight:600}
+.turbo.on:hover{background:var(--klimat-warm)}
 .room-head{display:flex;align-items:flex-start;gap:10px}
 .room-name{font-size:18px;font-weight:700;letter-spacing:-.01em;margin:0;color:var(--klimat-ink)}
 .room-sub{font-size:12.5px;color:var(--klimat-ink-3);margin:2px 0 0}
@@ -549,6 +580,10 @@ class KlimatCard extends HTMLElement {
     this._update();
   }
 
+  disconnectedCallback() {
+    clearInterval(this._poll);
+  }
+
   getCardSize() {
     const n = (this._config && this._config.rooms && this._config.rooms.length) || 1;
     return 4 + Math.ceil(n / 2) * 3;
@@ -647,7 +682,10 @@ class KlimatCard extends HTMLElement {
           <span data-wintext></span>
         </div>
         <div class="devices" data-devices></div>
-        <button class="resume" data-resume hidden>${esc(this.t("resume"))}</button>
+        <div class="acts">
+          <button class="resume" data-resume hidden>${esc(this.t("resume"))}</button>
+          <button class="resume turbo" data-turbo hidden>${esc(this.t("turbo"))}</button>
+        </div>
       `;
       el.querySelectorAll(".step").forEach((b) => {
         b.addEventListener("click", () => this._nudge(i, parseInt(b.dataset.step, 10)));
@@ -660,6 +698,11 @@ class KlimatCard extends HTMLElement {
           setTimeout(() => this._loadSched(), 1200);
         } catch (e) { /* brak dodatku / add-on missing */ }
       });
+      el.querySelector("[data-turbo]").addEventListener("click", () => {
+        const rn = r.name || this.t("room");
+        if (this._turbo && this._turbo[rn] != null) this._stopTurbo(rn);
+        else this._openTurboSheet(i);
+      });
       this._wireRibbon(el, i);
       wrap.appendChild(el);
       return el;
@@ -667,6 +710,12 @@ class KlimatCard extends HTMLElement {
 
     this._built = true;
     if (!this._schedLoaded) this._loadSched();
+
+    // w trakcie turbo odświeżamy stan, żeby kafelek sam zgasł po osiągnięciu celu
+    clearInterval(this._poll);
+    this._poll = setInterval(() => {
+      if (this._turbo && Object.keys(this._turbo).length) this._loadSched();
+    }, 30000);
   }
 
   _modeName(m) {
@@ -791,6 +840,13 @@ class KlimatCard extends HTMLElement {
       const v = raw.slice(7);
       return v === "midnight" ? this.t("rMidnight") : this.t("rManual", { t: v });
     }
+    if (raw.indexOf("turbo:") === 0) {
+      return this.t("rTurbo", { t: fmt(parseFloat(raw.slice(6))) });
+    }
+    if (raw.indexOf("off:") === 0) {
+      const v = raw.slice(4);
+      return v === "midnight" ? this.t("rOffMidnight") : this.t("rOffUntil", { t: v });
+    }
     return raw;
   }
 
@@ -888,7 +944,16 @@ class KlimatCard extends HTMLElement {
         el.querySelector("[data-wintext]").textContent = this._windowText(winState, s, rawWhy);
       }
 
-      el.querySelector("[data-resume]").hidden = !(rawWhy && rawWhy.indexOf("manual") === 0);
+      el.querySelector("[data-resume]").hidden =
+        !(rawWhy && (rawWhy.indexOf("manual") === 0 || rawWhy.indexOf("off:") === 0));
+
+      const rn = r.name || this.t("room");
+      const turboOn = !!(this._turbo && this._turbo[rn] != null);
+      const turboOk = !!(this._canTurbo && this._canTurbo.indexOf(rn) >= 0);
+      const tb = el.querySelector("[data-turbo]");
+      tb.hidden = !(turboOk || turboOn);
+      tb.textContent = turboOn ? this.t("turboStop") : this.t("turbo");
+      tb.classList.toggle("on", turboOn);
 
       this._renderDevices(el.querySelector("[data-devices]"), r, s);
     });
@@ -995,15 +1060,79 @@ class KlimatCard extends HTMLElement {
     setTimeout(() => { this._localSet = {}; this._update(); }, 3000);
   }
 
+  /* ================= TURBO ================= */
+
+  async _stopTurbo(roomName) {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: "klimat/room/turbo/stop", room: roomName,
+      });
+    } catch (e) { /* brak dodatku */ }
+    setTimeout(() => this._loadSched(), 1000);
+  }
+
+  _openTurboSheet(idx) {
+    const r = this._config.rooms[idx];
+    const roomName = r.name || this.t("room");
+    const s = this._readRoom(r, idx);
+    const attrs = (s.primary && s.primary.attributes) || {};
+    const lo = isFinite(num(attrs.min_temp)) ? num(attrs.min_temp) : 15;
+    const hi = isFinite(num(attrs.max_temp)) ? num(attrs.max_temp) : 30;
+    const base = isFinite(s.set) ? s.set : (isFinite(s.now) ? s.now : 21);
+    let goal = Math.max(lo, Math.min(hi, Math.round((base + 2) * 2) / 2));
+
+    const bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = `
+      <div class="sheet" role="dialog">
+        <h3>${esc(this.t("turboTitle"))} · ${esc(roomName)}</h3>
+        <p class="sub">${esc(this.t("turboDesc"))}</p>
+        <div class="readout" style="margin-bottom:18px">
+          <div class="now" data-goal>${fmt(goal)}<span>°</span></div>
+          <div class="target">
+            <button class="step" data-d="-1" aria-label="−">−</button>
+            <button class="step" data-d="1" aria-label="+">+</button>
+          </div>
+        </div>
+        <div class="sheet-acts">
+          <button class="sbtn" data-cancel>${esc(this.t("cancel"))}</button>
+          <button class="sbtn primary" data-go>${esc(this.t("turboStart"))}</button>
+        </div>
+      </div>`;
+
+    const show = () => { bg.querySelector("[data-goal]").innerHTML = `${fmt(goal)}<span>°</span>`; };
+    bg.querySelectorAll(".step").forEach((b) => {
+      b.addEventListener("click", () => {
+        goal = Math.max(lo, Math.min(hi, Math.round((goal + (+b.dataset.d) * 0.5) * 2) / 2));
+        show();
+      });
+    });
+    const close = () => bg.remove();
+    bg.querySelector("[data-cancel]").addEventListener("click", close);
+    bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
+    bg.querySelector("[data-go]").addEventListener("click", async () => {
+      close();
+      try {
+        await this._hass.connection.sendMessagePromise({
+          type: "klimat/room/turbo", room: roomName, temp: goal,
+        });
+      } catch (e) { /* brak dodatku */ }
+      setTimeout(() => this._loadSched(), 1000);
+    });
+    this._root.appendChild(bg);
+  }
+
   /* ================= HARMONOGRAM / SCHEDULE ================= */
 
   async _loadSched() {
     this._schedLoaded = true;
     const box = this._root.querySelector("[data-sched]");
-    if (box) box.innerHTML = `<p class="soon">${esc(this.t("loading"))}</p>`;
+    if (box && !this._sched) box.innerHTML = `<p class="soon">${esc(this.t("loading"))}</p>`;
     try {
       const cfg = await this._hass.connection.sendMessagePromise({ type: "klimat/config/get" });
       this._reasons = (cfg && cfg.reasons) || {};
+      this._turbo = (cfg && cfg.turbo) || {};
+      this._canTurbo = (cfg && cfg.can_turbo) || [];
       this._sched = this._mergeSched(cfg);
       this._schedErr = null;
       if (this._roomsDiffer(cfg)) this._saveSched();
@@ -1032,6 +1161,7 @@ class KlimatCard extends HTMLElement {
         name,
         heat: r.climate || null,
         cool: r.ac || null,
+        sensor: r.sensor || null,
         window: r.window || null,
         days: prev && Array.isArray(prev.days) && prev.days.length === 7
           ? prev.days
@@ -1050,6 +1180,7 @@ class KlimatCard extends HTMLElement {
       if (!t) return true;
       return (t.heat || null) !== (r.heat || null)
         || (t.cool || null) !== (r.cool || null)
+        || (t.sensor || null) !== (r.sensor || null)
         || (t.window || null) !== (r.window || null);
     });
   }
@@ -1344,6 +1475,7 @@ class KlimatCard extends HTMLElement {
     const win = R.window_open || {};
     const away = R.away || {};
     const conf = R.no_conflict || {};
+    const wake = R.wake_devices || {};
     const persons = Object.keys(this._hass.states).filter((id) => id.startsWith("person.")).sort();
     const chosen = away.persons || [];
     const n = this._sched.rooms.filter((r) => r.window).length;
@@ -1391,6 +1523,15 @@ class KlimatCard extends HTMLElement {
             <p>${esc(this.t("ruleConfD"))}</p>
           </div>
           <button class="sw" data-toggle="no_conflict" aria-pressed="${conf.enabled === false ? "false" : "true"}"
+            aria-label="${esc(this.t("enable"))}"></button>
+        </div>
+
+        <div class="rule${wake.enabled === false ? " off" : ""}">
+          <div style="min-width:0;flex:1">
+            <h4>${esc(this.t("ruleWakeT"))}</h4>
+            <p>${esc(this.t("ruleWakeD"))}</p>
+          </div>
+          <button class="sw" data-toggle="wake_devices" aria-pressed="${wake.enabled === false ? "false" : "true"}"
             aria-label="${esc(this.t("enable"))}"></button>
         </div>
       </div>

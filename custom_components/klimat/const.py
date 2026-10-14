@@ -26,8 +26,14 @@ DEFAULT_DATA = {
         "away": {"enabled": False, "temp": 17, "persons": []},
         # w jednym pokoju pracuje tylko jedno urządzenie
         "no_conflict": {"enabled": True},
+        # harmonogram może włączyć urządzenie wyłączone ręcznie — ale dopiero
+        # od następnego bloku, nigdy w trakcie tego, w którym je zgaszono
+        "wake_devices": {"enabled": True},
     },
 }
 
 # wersja używana do odświeżania adresu karty (omija pamięć podręczną przeglądarki)
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+# po tylu minutach turbo gasi się samo, choćby cel był nieosiągalny
+TURBO_MAX_MIN = 120

@@ -24,7 +24,10 @@ from homeassistant.components import websocket_api
 from homeassistant.util import dt as dt_util
 
 from .card import async_setup_card
-from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION, DEFAULT_DATA, TICK_SECONDS, VERSION
+from .const import (
+    DOMAIN, STORAGE_KEY, STORAGE_VERSION, DEFAULT_DATA, TICK_SECONDS,
+    TURBO_MAX_MIN, VERSION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +50,11 @@ class KlimatData:
         self.reasons: dict[str, str] = {}
         # o której harmonogram przejmie z powrotem stery
         self._next_change: dict[str, float | None] = {}
+        # blok, w którym zastaliśmy urządzenie wyłączone ręcznie —
+        # wyłączenie obowiązuje do końca tego bloku, potem harmonogram wraca
+        self._off_block: dict[str, str] = {}
+        # pokoje w trybie turbo: {nazwa: {"temp": float, "started": datetime}}
+        self._turbo: dict[str, dict[str, Any]] = {}
 
     # ---------- zapis i odczyt ----------
 
@@ -201,6 +209,50 @@ class KlimatData:
             return cool or heat
         return heat or cool
 
+    def room_temp(self, room: dict) -> float | None:
+        """Zmierzona temperatura pokoju — ze ściennego czujnika, nie z głowicy."""
+        ent = room.get("sensor")
+        if ent:
+            state = self.hass.states.get(ent)
+            if state is not None:
+                try:
+                    return float(state.state)
+                except (TypeError, ValueError):
+                    pass
+        for ent in (room.get("heat"), room.get("cool")):
+            if not ent:
+                continue
+            state = self.hass.states.get(ent)
+            if state is None:
+                continue
+            try:
+                return float(state.attributes.get("current_temperature"))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def can_turbo(self, room: dict) -> bool:
+        """Turbo wymaga grzejnika i klimatyzacji, która umie grzać."""
+        if not room.get("heat") or not room.get("cool"):
+            return False
+        state = self.hass.states.get(room["cool"])
+        return bool(state and "heat" in (state.attributes.get("hvac_modes") or []))
+
+    def wake_mode(self, room: dict, state) -> str | None:
+        """Tryb, w który wprowadzamy urządzenie, gdy harmonogram je budzi."""
+        modes = list(state.attributes.get("hvac_modes") or [])
+        if not modes:
+            return None
+        cooling = room.get("cool") and self.target_entity(room) == room.get("cool")
+        wanted = ["cool", "auto", "heat_cool"] if cooling else ["heat", "auto", "heat_cool"]
+        for mode in wanted:
+            if mode in modes:
+                return mode
+        for mode in modes:
+            if mode != "off":
+                return mode
+        return None
+
     def other_entity(self, room: dict) -> str | None:
         """Urządzenie, które w tej porze roku ma milczeć."""
         heat, cool = room.get("heat"), room.get("cool")
@@ -248,9 +300,124 @@ class KlimatData:
 
         return temp, reason, block_key
 
+    # ---------- turbo ----------
+
+    async def async_start_turbo(self, name: str, temp: float) -> None:
+        """Grzejnik i klimatyzacja grzeją razem, aż pokój osiągnie temperaturę."""
+        self._turbo[name] = {"temp": float(temp), "started": dt_util.utcnow()}
+        self._applied.pop(name, None)
+        self._off_block.pop(name, None)
+        await self.async_apply()
+
+    async def async_stop_turbo(self, name: str) -> None:
+        room = next(
+            (r for r in self.data.get("rooms", []) if (r.get("name") or "?") == name), None
+        )
+        await self._stop_turbo(name, (room or {}).get("cool"))
+        await self.async_apply()
+
+    async def _stop_turbo(self, name: str, cool: str | None) -> None:
+        """Gasimy klimatyzację i oddajemy pokój harmonogramowi."""
+        self._turbo.pop(name, None)
+        self._applied.pop(name, None)
+        self._off_block.pop(name, None)
+        if not cool:
+            return
+        state = self.hass.states.get(cool)
+        if state is not None and state.state not in ("off", "unavailable", "unknown"):
+            _LOGGER.debug("Klimat: turbo w %s zakończone, gaszę %s", name, cool)
+            await self.hass.services.async_call(
+                "climate", "set_hvac_mode",
+                {"entity_id": cool, "hvac_mode": "off"},
+                blocking=False,
+            )
+
+    async def _run_turbo(self, room: dict, name: str) -> bool:
+        """True, jeśli turbo dalej trwa i pokój został obsłużony."""
+        info = self._turbo.get(name) or {}
+        heat, cool = room.get("heat"), room.get("cool")
+        try:
+            goal = float(info.get("temp"))
+        except (TypeError, ValueError):
+            goal = None
+
+        started = info.get("started")
+        minutes = (dt_util.utcnow() - started).total_seconds() / 60 if started else 0
+        measured = self.room_temp(room)
+
+        # cel osiągnięty albo bezpiecznik czasowy — koniec zabawy
+        if goal is None or not cool:
+            await self._stop_turbo(name, cool)
+            return False
+        if measured is not None and measured >= goal - 0.1:
+            _LOGGER.debug("Klimat: turbo w %s — osiągnięto %.1f°C", name, measured)
+            await self._stop_turbo(name, cool)
+            return False
+        if minutes >= TURBO_MAX_MIN:
+            _LOGGER.warning(
+                "Klimat: turbo w %s przerwane po %d min — cel %.1f°C nieosiągnięty",
+                name, TURBO_MAX_MIN, goal,
+            )
+            await self._stop_turbo(name, cool)
+            return False
+
+        # grzejnik: ta sama temperatura; zawór i tak otworzy się do oporu,
+        # a po turbo nie zostaje rozkręcony na maksa
+        if heat:
+            state = self.hass.states.get(heat)
+            if state is not None and state.state not in ("unavailable", "unknown"):
+                if state.state == "off":
+                    mode = self.wake_mode({"heat": heat}, state)
+                    if mode:
+                        await self.hass.services.async_call(
+                            "climate", "set_hvac_mode",
+                            {"entity_id": heat, "hvac_mode": mode}, blocking=False,
+                        )
+                await self._set_temp_if_needed(heat, state, goal)
+
+        # klimatyzacja w trybie grzania
+        state = self.hass.states.get(cool)
+        if state is not None and state.state not in ("unavailable", "unknown"):
+            if state.state != "heat":
+                await self.hass.services.async_call(
+                    "climate", "set_hvac_mode",
+                    {"entity_id": cool, "hvac_mode": "heat"}, blocking=False,
+                )
+            await self._set_temp_if_needed(cool, state, goal)
+
+        self.reasons[name] = f"turbo:{goal:.1f}"
+        self._applied.pop(name, None)
+        return True
+
+    async def _set_temp_if_needed(self, entity: str, state, temp: float) -> None:
+        current = state.attributes.get("temperature")
+        if current is not None and abs(float(current) - temp) < 0.05:
+            return
+        await self.hass.services.async_call(
+            "climate", "set_temperature",
+            {"entity_id": entity, "temperature": temp}, blocking=False,
+        )
+
+    def _until_label(self, name: str, prefix: str) -> str:
+        """Do kiedy obowiązuje ręczne ustawienie — karta pokazuje to na kafelku."""
+        until = self._next_change.get(name)
+        if until is not None and until < 24:
+            h, m = int(until), int(round((until - int(until)) * 60))
+            if m == 60:
+                h, m = h + 1, 0
+            if h < 24:
+                return f"{prefix}:{h:02d}:{m:02d}"
+        return f"{prefix}:midnight"
+
     async def async_resume(self, name: str) -> None:
         """Anuluje ręczne nadpisanie w pokoju i oddaje stery harmonogramowi."""
         self._applied.pop(name, None)
+        self._off_block.pop(name, None)
+        if name in self._turbo:
+            room = next(
+                (r for r in self.data.get("rooms", []) if (r.get("name") or "?") == name), None
+            )
+            await self._stop_turbo(name, (room or {}).get("cool"))
         await self.async_apply()
 
     async def async_apply(self) -> None:
@@ -263,6 +430,10 @@ class KlimatData:
             name = room.get("name") or "?"
             target = self.target_entity(room)
             if not target:
+                continue
+
+            # Turbo — jedyny moment, w którym grzejnik i klimatyzacja pracują razem.
+            if name in self._turbo and await self._run_turbo(room, name):
                 continue
 
             # jedno urządzenie na pokój — drugie gasimy, żeby nie walczyły
@@ -285,10 +456,37 @@ class KlimatData:
             state = self.hass.states.get(target)
             if state is None or state.state in ("unavailable", "unknown"):
                 continue
-            # urządzenia wyłączonego ręcznie nie budzimy
+            # Ręczne wyłączenie obowiązuje do końca bieżącego bloku — tak samo
+            # jak ręczna zmiana temperatury. Potem harmonogram budzi urządzenie,
+            # żeby zgaszony w lipcu grzejnik nie został zgaszony do listopada.
             if state.state == "off":
-                self.reasons[name] = "off_manual"
-                continue
+                wake = self.data.get("rules", {}).get("wake_devices", {}).get("enabled", True)
+                off_since = self._off_block.setdefault(name, block_key)
+
+                # reguły tylko oszczędzają — nigdy nie włączają niczego same
+                if not wake or reason != "schedule":
+                    self.reasons[name] = "off_manual"
+                    continue
+
+                if off_since == block_key:
+                    self.reasons[name] = self._until_label(name, "off")
+                    continue
+
+                mode = self.wake_mode(room, state)
+                if mode is None:
+                    self.reasons[name] = "off_manual"
+                    continue
+
+                _LOGGER.debug("Klimat: budzę %s (%s) w trybie %s", name, target, mode)
+                self._off_block.pop(name, None)
+                self._applied.pop(name, None)
+                await self.hass.services.async_call(
+                    "climate", "set_hvac_mode",
+                    {"entity_id": target, "hvac_mode": mode},
+                    blocking=False,
+                )
+            else:
+                self._off_block.pop(name, None)
 
             current = state.attributes.get("temperature")
             prev = self._applied.get(name) or {}
@@ -305,12 +503,7 @@ class KlimatData:
             ):
                 # powody zwracamy jako klucze — tłumaczy je karta, zgodnie
                 # z językiem ustawionym w Home Assistancie
-                until = self._next_change.get(name)
-                if until is not None and until < 24:
-                    h, m = int(until), int(round((until - int(until)) * 60))
-                    self.reasons[name] = f"manual:{h:02d}:{m:02d}"
-                else:
-                    self.reasons[name] = "manual:midnight"
+                self.reasons[name] = self._until_label(name, "manual")
                 continue
 
             self.reasons[name] = reason
@@ -363,6 +556,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         websocket_api.async_register_command(hass, ws_set_config)
         websocket_api.async_register_command(hass, ws_apply_now)
         websocket_api.async_register_command(hass, ws_resume_room)
+        websocket_api.async_register_command(hass, ws_turbo_start)
+        websocket_api.async_register_command(hass, ws_turbo_stop)
         hass.data[DOMAIN]["ws_registered"] = True
 
     await data.async_apply()
@@ -392,6 +587,10 @@ def ws_get_config(hass: HomeAssistant, connection, msg) -> None:
         return
     result = dict(store.data)
     result["reasons"] = store.reasons
+    result["turbo"] = {k: v.get("temp") for k, v in store._turbo.items()}
+    result["can_turbo"] = [
+        (r.get("name") or "?") for r in store.data.get("rooms", []) if store.can_turbo(r)
+    ]
     connection.send_result(msg["id"], result)
 
 
@@ -422,6 +621,37 @@ async def ws_resume_room(hass: HomeAssistant, connection, msg) -> None:
         connection.send_error(msg["id"], "not_ready", "Dodatek Klimat nie jest uruchomiony.")
         return
     await store.async_resume(msg["room"])
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "klimat/room/turbo",
+        vol.Required("room"): str,
+        vol.Required("temp"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def ws_turbo_start(hass: HomeAssistant, connection, msg) -> None:
+    """Grzejnik i klimatyzacja grzeją razem do zadanej temperatury."""
+    store = _store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_ready", "Dodatek Klimat nie jest uruchomiony.")
+        return
+    await store.async_start_turbo(msg["room"], msg["temp"])
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "klimat/room/turbo/stop", vol.Required("room"): str}
+)
+@websocket_api.async_response
+async def ws_turbo_stop(hass: HomeAssistant, connection, msg) -> None:
+    store = _store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_ready", "Dodatek Klimat nie jest uruchomiony.")
+        return
+    await store.async_stop_turbo(msg["room"])
     connection.send_result(msg["id"], {"ok": True})
 
 
