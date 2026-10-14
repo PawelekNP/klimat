@@ -1,7 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="custom_components/klimat/brand/dark_logo.png">
-  <img src="custom_components/klimat/brand/logo.png" alt="Klimat" width="320">
-</picture>
+![Klimat](https://raw.githubusercontent.com/PawelekNP/klimat/main/banner.png)
 
 Heating and cooling for Home Assistant — one panel for every room, a weekly
 schedule, rules, history, and a summer/winter switch.
