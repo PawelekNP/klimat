@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Klimat",
+        "description": "Klimat keeps a weekly heating and cooling schedule and makes sure every room gets the temperature it should have, every minute. You edit the schedule in the Klimat card on your dashboard."
+      }
+    },
+    "abort": {
+      "already_configured": "Klimat is already set up."
+    }
+  }
+}

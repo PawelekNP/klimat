@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Klimat",
+        "description": "Dodatek przechowuje tygodniowy harmonogram ogrzewania i chłodzenia, i co minutę pilnuje, żeby każdy pokój miał przewidzianą temperaturę. Harmonogram edytujesz w karcie Klimat na dashboardzie."
+      }
+    },
+    "abort": {
+      "already_configured": "Klimat jest już dodany."
+    }
+  }
+}
