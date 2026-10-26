@@ -33,7 +33,7 @@ DEFAULT_DATA = {
 }
 
 # wersja używana do odświeżania adresu karty (omija pamięć podręczną przeglądarki)
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # po tylu minutach turbo gasi się samo, choćby cel był nieosiągalny
 TURBO_MAX_MIN = 120

@@ -1,10 +1,10 @@
 /*!
  * Klimat Card — ogrzewanie i chłodzenie w Home Assistancie.
  * Klimat Card — heating and cooling for Home Assistant.
- * v1.3.0 — MIT
+ * v1.4.0 — MIT
  */
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 
 /* ================= tłumaczenia / translations ================= */
 
@@ -23,6 +23,11 @@ const STR = {
     edEnergyHint: "Licznik zużycia z gniazdka albo przekaźnika, np. Shelly. " +
       "Musi być licznikiem narastającym, nie chwilową mocą w watach.",
     edPrice: "Cena za kWh", edPriceHint: "Zostaw puste, żeby nie pokazywać kosztów.",
+    battery: "Bateria", batteryDead: "bateria na wyczerpaniu",
+    batteryBar: "Słabe baterie:",
+    edBattery: "Ostrzegaj przy baterii poniżej",
+    edBatteryHint: "Klimat sam znajduje baterie urządzeń, z których korzysta w pokojach. " +
+      "Dopóki wszystkie są naładowane, nic nie pokazuje. Wpisz 0, żeby wyłączyć ostrzeżenia.",
     stHeat: "grzanie", stCool: "chłodzenie", stIdle: "gotowe", stNone: "brak",
     doHeat: "grzeje", doCool: "chłodzi", doHold: "utrzymuje", doNone: "niedostępne",
     target: "cel", room: "Pokój", newRoom: "Nowy pokój",
@@ -135,6 +140,11 @@ const STR = {
     edEnergyHint: "A consumption meter from a socket or relay, for example a Shelly. " +
       "It must be a cumulative meter, not instantaneous power in watts.",
     edPrice: "Price per kWh", edPriceHint: "Leave empty to hide costs.",
+    battery: "Battery", batteryDead: "battery almost flat",
+    batteryBar: "Low batteries:",
+    edBattery: "Warn when battery drops below",
+    edBatteryHint: "Klimat finds the batteries of the devices it uses by itself. " +
+      "While they are charged it shows nothing. Enter 0 to switch the warnings off.",
     stHeat: "heating", stCool: "cooling", stIdle: "ready", stNone: "none",
     doHeat: "heating", doCool: "cooling", doHold: "holding", doNone: "unavailable",
     target: "target", room: "Room", newRoom: "New room",
@@ -338,6 +348,27 @@ function entitiesInArea(hass, areaId, domain) {
   });
   return out;
 }
+/**
+ * Bateria urządzenia: szukamy jej na tym samym urządzeniu, do którego należy
+ * wskazana encja. Dzięki temu nic nie trzeba konfigurować ręcznie.
+ */
+function findBattery(hass, entityId) {
+  if (!entityId || !hass.entities) return null;
+  const own = hass.entities[entityId];
+  const deviceId = own && own.device_id;
+  if (!deviceId) return null;
+
+  let level = null, flag = null;
+  Object.keys(hass.entities).forEach((id) => {
+    if (hass.entities[id].device_id !== deviceId) return;
+    const st = hass.states[id];
+    if (!st || !st.attributes || st.attributes.device_class !== "battery") return;
+    if (id.startsWith("sensor.") && !level) level = id;
+    else if (id.startsWith("binary_sensor.") && !flag) flag = id;
+  });
+  return level || flag;
+}
+
 function isEnergySensor(hass, id) {
   if (!id.startsWith("sensor.")) return false;
   const s = hass.states[id];
@@ -448,6 +479,15 @@ const STYLES = `
   border-radius:9px;padding:6px 12px;font:inherit;font-size:12.5px;cursor:pointer;transition:.15s}
 .resume:hover{background:color-mix(in srgb,var(--klimat-warm) 14%,transparent)}
 .acts{display:flex;gap:8px;flex-wrap:wrap}
+.batbar{display:flex;align-items:center;gap:9px;margin:-4px 0 14px;padding:9px 13px;border-radius:11px;
+  font-size:13px;line-height:1.45;color:var(--klimat-warm);
+  background:color-mix(in srgb,var(--klimat-warm) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--klimat-warm) 32%,transparent)}
+.batbar svg{flex:0 0 auto}
+.batbar b{font-weight:600}
+.chip.low,.chip.low b{color:var(--klimat-warm)}
+.chip.low{border-color:color-mix(in srgb,var(--klimat-warm) 45%,transparent)}
+.chip.low .led{background:var(--klimat-warm)}
 .acts:empty{display:none}
 .turbo{border-color:var(--klimat-ink-3);color:var(--klimat-ink-2)}
 .turbo:hover{border-color:var(--klimat-ink);color:var(--klimat-ink);background:var(--klimat-surface-2)}
@@ -704,6 +744,7 @@ class KlimatCard extends HTMLElement {
       ${modes.length ? `<div class="modes">
         ${modes.map((m, i) => `<button class="mode" data-mode="${i}" aria-pressed="false"><span class="dot"></span>${esc(this._modeName(m))}</button>`).join("")}
       </div>` : ""}
+      <div class="batbar" data-batbar hidden></div>
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-view="pokoje" aria-selected="true">${esc(this.t("tabRooms"))}</button>
         <button class="tab" role="tab" data-view="harmonogram" aria-selected="false">${esc(this.t("tabSched"))}</button>
@@ -1012,6 +1053,8 @@ class KlimatCard extends HTMLElement {
       b.setAttribute("aria-pressed", b.dataset.s === season ? "true" : "false");
     });
 
+    const lowBat = [];
+
     cfg.rooms.forEach((r, i) => {
       const el = this._roomEls[i];
       const s = this._readRoom(r, i);
@@ -1076,11 +1119,16 @@ class KlimatCard extends HTMLElement {
       tb.classList.toggle("on", turboOn);
 
       this._renderLock(el, r, i);
-      this._renderDevices(el.querySelector("[data-devices]"), r, s);
+
+      const low = this._lowBatteries(r, i);
+      low.forEach((b) => lowBat.push({ ...b, room: r.name || this.t("room") }));
+      this._renderDevices(el.querySelector("[data-devices]"), r, s, low);
     });
+
+    this._renderBatteryBar(lowBat);
   }
 
-  _renderDevices(wrap, r, s) {
+  _renderDevices(wrap, r, s, low) {
     const bits = [];
     if (r.climate) {
       const e = s.heat;
@@ -1120,8 +1168,17 @@ class KlimatCard extends HTMLElement {
         led: "", muted: !e || !open, static: true });
     }
 
+    (low || []).forEach((b) => {
+      bits.push({
+        k: `${this.t("battery")} ${b.label.toLowerCase()}`,
+        v: b.pct == null ? this.t("batteryDead")
+          : fmt(b.pct, "?").replace(DEC + "0", "") + "%",
+        led: "", muted: false, id: b.id, low: true,
+      });
+    });
+
     const html = bits.map((b) =>
-      `<button class="chip${b.muted ? " muted" : ""}${b.active ? " active" : ""}"${b.static ? " data-static" : ` data-entity="${b.id}"`}><i class="led ${b.led}"></i>${esc(b.k)} <b>${esc(String(b.v))}</b></button>`
+      `<button class="chip${b.muted ? " muted" : ""}${b.active ? " active" : ""}${b.low ? " low" : ""}"${b.static ? " data-static" : ` data-entity="${b.id}"`}><i class="led ${b.led}"></i>${esc(b.k)} <b>${esc(String(b.v))}</b></button>`
     ).join("");
 
     if (wrap._html !== html) {
@@ -1131,6 +1188,62 @@ class KlimatCard extends HTMLElement {
         c.addEventListener("click", () => this._moreInfo(c.dataset.entity));
       });
     }
+  }
+
+  get _batteryLimit() {
+    const v = num(this._config.battery_warn);
+    return isFinite(v) ? v : 20;
+  }
+
+  /** Baterie urządzeń pokoju — tylko te, które zjechały poniżej progu. */
+  _lowBatteries(r, idx) {
+    const limit = this._batteryLimit;
+    if (limit <= 0) return [];
+
+    this._batCache = this._batCache || {};
+    if (!(idx in this._batCache)) {
+      const parts = [
+        [r.climate, this.t("heating")],
+        [r.ac, this.t("ac")],
+        [r.heat_switch, this.t("floor")],
+        [r.sensor, this.t("sensor")],
+        [r.window, this.t("window")],
+      ];
+      const seen = {};
+      this._batCache[idx] = parts
+        .map(([ent, label]) => [findBattery(this._hass, ent), label])
+        .filter(([bat]) => bat && !seen[bat] && (seen[bat] = true))
+        .map(([bat, label]) => ({ id: bat, label }));
+    }
+
+    const out = [];
+    this._batCache[idx].forEach((b) => {
+      const st = this._hass.states[b.id];
+      if (!st || st.state === "unavailable" || st.state === "unknown") return;
+      if (b.id.startsWith("binary_sensor.")) {
+        if (st.state === "on") out.push({ ...b, pct: null });
+        return;
+      }
+      const pct = num(st.state);
+      if (isFinite(pct) && pct <= limit) out.push({ ...b, pct });
+    });
+    return out;
+  }
+
+  _renderBatteryBar(all) {
+    const bar = this._root.querySelector("[data-batbar]");
+    if (!bar) return;
+    if (!all.length) { bar.hidden = true; return; }
+    bar.hidden = false;
+    const list = all
+      .map((b) => `${esc(b.room)} — ${esc(b.label.toLowerCase())} ${
+        b.pct == null ? esc(this.t("batteryDead")) : fmt(b.pct, "?").replace(DEC + "0", "") + "%"}`)
+      .join(" · ");
+    bar.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2"/>
+      <path d="M6 11v2"/></svg>
+      <span><b>${esc(this.t("batteryBar"))}</b> ${list}</span>`;
   }
 
   /** Encja blokady: ręcznie wskazana albo znaleziona na urządzeniu głowicy. */
@@ -2248,6 +2361,12 @@ class KlimatCardEditor extends HTMLElement {
         <p class="hintline">${esc(this.t("edPriceHint"))}</p>
       </div>
       <div class="sec">
+        <label class="lab">${esc(this.t("edBattery"))}</label>
+        <input type="number" step="1" min="0" max="100" id="battery"
+          value="${c.battery_warn != null ? c.battery_warn : 20}">
+        <p class="hintline">${esc(this.t("edBatteryHint"))}</p>
+      </div>
+      <div class="sec">
         <label class="lab">${esc(this.t("edOutside"))}</label>
         <select id="outside">${this._opts(weathers.concat(temps), c.outside, this.t("edOutsideNone"))}</select>
         <p class="hintline">${esc(this.t("edOutsideHint"))}</p>
@@ -2282,6 +2401,11 @@ class KlimatCardEditor extends HTMLElement {
     const c = this._config;
 
     sr.getElementById("title").addEventListener("input", (e) => { c.title = e.target.value; this._emit(); });
+    sr.getElementById("battery").addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      if (isFinite(v)) c.battery_warn = v; else delete c.battery_warn;
+      this._emit();
+    });
     sr.getElementById("price").addEventListener("input", (e) => {
       const v = parseFloat(e.target.value);
       if (isFinite(v)) c.price = v; else delete c.price;

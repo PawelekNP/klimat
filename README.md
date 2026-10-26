@@ -4,7 +4,7 @@ Heating and cooling for Home Assistant — one panel for every room, a weekly
 schedule, rules, history, and a summer/winter switch.
 The whole interface follows the language set in Home Assistant (English and Polish).
 
-![version](https://img.shields.io/badge/version-1.3.0-E8833A)
+![version](https://img.shields.io/badge/version-1.4.0-E8833A)
 ![hacs](https://img.shields.io/badge/HACS-custom%20repository-41BDF5)
 
 ## Install
@@ -111,6 +111,13 @@ from the schedule, so a bathroom set to 23° at 06:30 is warm at 06:30, not at 0
 measured rate survives restarts and gets better over the first few days. The room needs a
 temperature sensor.
 
+**Batteries.** Klimat watches the batteries of every device it relies on — valves,
+temperature sensors, window sensors — and finds them by itself, with nothing to configure.
+While they are charged it shows nothing at all. Once one drops below the threshold (20% by
+default), a bar appears at the top of the card naming the room and the device, and the
+tile itself marks it. A flat window sensor is worth catching early: stuck reporting
+\u201copen\u201d, it would hold that room at the standby temperature and nobody would know why.
+
 **Energy.** Point a room at a cumulative energy meter — a Shelly relay, a smart socket —
 and the **Energy** tab breaks consumption down by room: this month, last month, and a bar
 per month for the past year, so the heating season is visible at a glance. Set a price per
@@ -199,6 +206,13 @@ przestaje falować. I włącza *wcześniej*: mierzy, jak szybko dany pokój real
 nagrzewa, i odlicza wstecz od godziny z harmonogramu — żeby łazienka ustawiona na 23°
 o 6:30 była ciepła o 6:30, a nie o 7:30. Zmierzone tempo przeżywa restart i z każdym dniem
 jest celniejsze. Pokój musi mieć czujnik temperatury.
+
+**Baterie.** Klimat pilnuje baterii we wszystkich urządzeniach, na których polega —
+głowicach, czujnikach temperatury, czujnikach okien — i znajduje je sam, bez
+konfigurowania czegokolwiek. Dopóki są naładowane, nie pokazuje nic. Gdy któraś spadnie
+poniżej progu (domyślnie 20%), na górze karty pojawia się pasek z nazwą pokoju
+i urządzenia, a kafelek to zaznacza. Zwłaszcza padnięty czujnik okna warto złapać wcześnie:
+zacięty na „otwarte" trzymałby pokój na temperaturze postojowej i nikt by nie wiedział dlaczego.
 
 **Zużycie.** Wskaż pokojowi licznik energii — przekaźnik Shelly, gniazdko z pomiarem —
 a zakładka **Zużycie** pokaże rozbicie na pokoje: ten miesiąc, poprzedni i słupek na każdy
